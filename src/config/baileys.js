@@ -16,16 +16,42 @@ fs.ensureDirSync(sessionsDir);
 const sessions = {};
 const qrCodes = {}; // Store QR codes for each account
 
+const restoreSessions = async () => {
+  // Check if the directory exists before reading
+  if (!fs.existsSync(sessionsDir)) {
+    return;
+  }
+
+  const sessionDirs = fs.readdirSync(sessionsDir);
+
+  for (const uuid of sessionDirs) {
+    const sessionPath = path.join(sessionsDir, uuid);
+
+    // Check if creds.json exists (valid session)
+    if (fs.existsSync(path.join(sessionPath, "creds.json"))) {
+      createConnection(uuid, () => {
+        // console.log(`✅ Session restored for ${uuid}`);
+      });
+    } else {
+      console.log(`⚠️ No valid session found for ${uuid}`);
+    }
+  }
+};
+
 // Function to create a connection and handle QR code generation
 const createConnection = async (uuid, callback) => {
-  console.log("Creating connection for", uuid);
+  if (sessions[uuid] && sessions[uuid].sock) {
+    return;
+  }
+
   const sessionPath = path.join(sessionsDir, uuid);
   const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
 
   const sock = makeWASocket({
     auth: state,
     printQRInTerminal: false,
-    browser: ["Whatsify", "Chrome"] // Don't print the QR code in terminal automatically
+    browser: ["Whatsify", "Chrome"],
+    restartOnAuthFail: true,
   });
 
   // Listen for credentials update (save creds)
@@ -37,7 +63,6 @@ const createConnection = async (uuid, callback) => {
 
     // Handle QR code generation
     if (qr) {
-      console.log(`📌 QR Code received for ${uuid}: ${qr}`);
       qrCodes[uuid] = qr; // Store QR code in qrCodes for the given account (UUID)
 
       // Optionally, print QR code in terminal for local development
@@ -52,7 +77,6 @@ const createConnection = async (uuid, callback) => {
 
     // Handle connection open state
     if (connection === "open") {
-      console.log(`✅ Connected: ${uuid}`);
       delete qrCodes[uuid]; // Clear QR code after connection is made
       sessions[uuid] = { sock }; // Store the socket object in sessions
       if (callback && typeof callback === "function") {
@@ -64,33 +88,65 @@ const createConnection = async (uuid, callback) => {
     // Handle disconnection
     else if (connection === "close") {
       const reason = Boom.isBoom(lastDisconnect?.error)
-          ? lastDisconnect.error.output.statusCode
-          : null;
-  
-      console.log(`❌ Disconnected: ${uuid}, Reason: ${reason}`);
-  
+        ? lastDisconnect.error.output.statusCode
+        : null;
+
       // Cleanup session and QR codes
       delete sessions[uuid];
       delete qrCodes[uuid];
-  
+
       // If the user logged out (i.e. their session was invalidated)
       if (reason === DisconnectReason.loggedOut) {
-          // Log the reason for logout and delete the session folder
-          console.log(`User logged out, removing session folder for ${uuid}`);
-          try {
-              fs.removeSync(sessionPath); // Synchronously remove the session folder
-          } catch (error) {
-              console.error(`Failed to remove session folder for ${uuid}:`, error);
-          }
+        try {
+          fs.removeSync(sessionPath); // Synchronously remove the session folder
+          createConnection(uuid, callback); // Regenerate QR after logout
+        } catch (error) {}
       }
-  
+
+      // Gracefully handle 515 (Restart Required) error
+      if (reason === DisconnectReason.restartRequired) {
+        setTimeout(() => {
+          createConnection(uuid, callback); // Delay the reconnection
+        }, 2 * 1000); // Delay by 3 seconds to prevent immediate error on frontend
+      }
+
       // Reconnect on non-logout disconnects
       if (reason !== DisconnectReason.loggedOut) {
-          console.log(`Attempting to reconnect for ${uuid}`);
-          createConnection(uuid, callback);  // Call the callback to handle reconnection
+        createConnection(uuid, callback);
       }
-  }
-  
+
+      if (reason === null) {
+        setTimeout(() => {
+          createConnection(uuid, callback);
+        }, 3 * 1000); // Delay longer to avoid spamming
+        return;
+      }
+    }
+  });
+
+  sock.ev.on("messages.upsert", async (messageEvent) => {
+    const { messages, type } = messageEvent;
+
+    if (type === "notify") {
+      const msg = messages[0];
+      if (!msg.message) return; // Ignore empty messages
+
+      const sender = msg.key.remoteJid;
+      const isGroup = sender.includes("@g.us");
+
+      let messageContent;
+      if (msg.message.conversation) {
+        messageContent = msg.message.conversation;
+      } else if (msg.message.extendedTextMessage) {
+        messageContent = msg.message.extendedTextMessage.text;
+      } else {
+        messageContent = "[Unsupported Message Type]";
+      }
+      if (!msg.key.fromMe) {
+        console.log(`📩 New message from ${sender}: ${messageContent}`);
+        await sock.sendMessage(sender, { text: `You said: ${messageContent}` });
+      }
+    }
   });
 };
 
@@ -105,9 +161,15 @@ const getConnection = async (uuid, callback) => {
     if (qrCodes[uuid]) {
       callback(null, qrCodes[uuid]); // Return the QR code if it's available
     } else {
-      callback(null, null); // No QR code if already connected
+      return connection; // Return the existing connection
     }
   }
 };
 
-module.exports = { createConnection, getConnection, sessions, qrCodes };
+module.exports = {
+  createConnection,
+  restoreSessions,
+  getConnection,
+  sessions,
+  qrCodes,
+};
