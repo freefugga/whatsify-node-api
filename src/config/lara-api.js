@@ -1,28 +1,26 @@
 const axios = require("axios");
 
 // Function to notify Laravel backend about connection status (connected/disconnected)
-const sendDataToFrontend = async (uuid, status) => {
+const sendDataToApp = async (uuid, data) => {
   try {
+    console.log(data);
     const response = await axios.post(
-      "https://your-laravel-api.com/api/wa-server/data",
+      process.env.LARAVEL_HOST + "/api/wa-server/data/update",
       {
+        secret: process.env.LARAVEL_API_SECRET,
         uuid: uuid,
-        status: status, // 'connected' or 'disconnected'
+        data: data,
       }
     );
 
     if (response.status === 200) {
-      console.log(
-        `Successfully notified Laravel about ${status} status for UUID: ${uuid}`
-      );
+      console.log(`Successfully sent data to Laravel for UUID: ${uuid}`);
     } else {
-      console.error(
-        `Failed to notify Laravel about ${status} status for UUID: ${uuid}`
-      );
+      console.error(`Failed to send data to Laravel for UUID: ${uuid}`);
     }
   } catch (error) {
-    console.error(`Error notifying Laravel about connection status: ${error}`);
+    console.error(`Error sending data to Laravel for UUID: ${uuid}: ${error}`);
   }
 };
 
-module.exports = { sendDataToFrontend };
+module.exports = { sendDataToApp };

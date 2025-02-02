@@ -7,10 +7,17 @@ const fs = require("fs-extra");
 const path = require("path");
 const qrcodeTerminal = require("qrcode-terminal");
 const Boom = require("@hapi/boom");
+const P = require("pino");
 
-const { sendDataToFrontend } = require("../config/lara-api");
+const { sendDataToApp } = require("../config/lara-api");
+const e = require("express");
 
-const sessionsDir = path.join(__dirname, "../../sessions/");
+let appDataPayload = {
+  type: "",
+  data: {},
+};
+
+const sessionsDir = path.join(__dirname, "../../storage/sessions/");
 fs.ensureDirSync(sessionsDir);
 
 const sessions = {};
@@ -30,7 +37,7 @@ const restoreSessions = async () => {
     // Check if creds.json exists (valid session)
     if (fs.existsSync(path.join(sessionPath, "creds.json"))) {
       createConnection(uuid, () => {
-        // console.log(`✅ Session restored for ${uuid}`);
+        console.log(`✅ Session restored for ${uuid}`);
       });
     } else {
       console.log(`⚠️ No valid session found for ${uuid}`);
@@ -52,6 +59,9 @@ const createConnection = async (uuid, callback) => {
     printQRInTerminal: false,
     browser: ["Whatsify", "Chrome"],
     restartOnAuthFail: true,
+    logger: P({ level: "silent" }),
+    syncFullHistory: false,
+    emitOwnEvents: true,
   });
 
   // Listen for credentials update (save creds)
@@ -79,10 +89,12 @@ const createConnection = async (uuid, callback) => {
     if (connection === "open") {
       delete qrCodes[uuid]; // Clear QR code after connection is made
       sessions[uuid] = { sock }; // Store the socket object in sessions
+      appDataPayload.type = "connection";
+      appDataPayload.data = { status: "connected" };
+      sendDataToApp(uuid, appDataPayload);
       if (callback && typeof callback === "function") {
         callback(null, null); // Connection established, no QR needed
       }
-      sendDataToFrontend(uuid, "connected");
     }
 
     // Handle disconnection
@@ -90,6 +102,9 @@ const createConnection = async (uuid, callback) => {
       const reason = Boom.isBoom(lastDisconnect?.error)
         ? lastDisconnect.error.output.statusCode
         : null;
+
+      // console.log("All Reasons", DisconnectReason);
+      console.log(`❌ Disconnected ${uuid}: ${reason}`);
 
       // Cleanup session and QR codes
       delete sessions[uuid];
@@ -99,15 +114,23 @@ const createConnection = async (uuid, callback) => {
       if (reason === DisconnectReason.loggedOut) {
         try {
           fs.removeSync(sessionPath); // Synchronously remove the session folder
-          createConnection(uuid, callback); // Regenerate QR after logout
-        } catch (error) {}
+          appDataPayload.type = "connection";
+          appDataPayload.data = { status: "logged_out" };
+          sendDataToApp(uuid, appDataPayload);
+        } catch (error) {
+          console.error(`❌ Error removing session for ${uuid}: ${error}`);
+        }
       }
 
       // Gracefully handle 515 (Restart Required) error
-      if (reason === DisconnectReason.restartRequired) {
+      if (
+        reason === DisconnectReason.restartRequired ||
+        reason === DisconnectReason.connectionReplaced ||
+        reason === DisconnectReason.unavailableService
+      ) {
         setTimeout(() => {
           createConnection(uuid, callback); // Delay the reconnection
-        }, 2 * 1000); // Delay by 3 seconds to prevent immediate error on frontend
+        }, 5 * 1000); // Delay by 3 seconds to prevent immediate error on frontend
       }
 
       // Reconnect on non-logout disconnects
@@ -132,19 +155,133 @@ const createConnection = async (uuid, callback) => {
       if (!msg.message) return; // Ignore empty messages
 
       const sender = msg.key.remoteJid;
+      if (sender === "status@broadcast") return; // Ignore status messages
       const isGroup = sender.includes("@g.us");
 
       let messageContent;
+      let messageType;
+      // Remove status if present in appDataPayload
+      if (appDataPayload.data.status) {
+        delete appDataPayload.data.status;
+      }
+      appDataPayload.type = "incoming_message";
+      appDataPayload.data.message = {}; // Initialize message object
+      const downloadAndSaveFile = async (url, filePath) => {
+        const response = await fetch(url);
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        fs.writeFileSync(filePath, buffer);
+      };
+
+      const storageDir = path.join(__dirname, "../../storage/downloads", uuid);
+
       if (msg.message.conversation) {
+        messageType = "text";
         messageContent = msg.message.conversation;
+        appDataPayload.data.message.type = "text";
+        appDataPayload.data.message.text = messageContent;
       } else if (msg.message.extendedTextMessage) {
+        messageType = "text";
         messageContent = msg.message.extendedTextMessage.text;
+        appDataPayload.data.message.type = "text";
+        appDataPayload.data.message.text = messageContent;
+      } else if (msg.message.imageMessage) {
+        messageType = "image";
+        messageContent = "🖼️ You sent an image.";
+        appDataPayload.data.message.type = "image";
+        const imageDir = path.join(storageDir, "image");
+        fs.ensureDirSync(imageDir);
+        const imagePath = path.join(imageDir, `${Date.now()}.jpg`);
+        await downloadAndSaveFile(msg.message.imageMessage.url, imagePath);
+        appDataPayload.data.message.url = imagePath;
+      } else if (msg.message.videoMessage) {
+        messageType = "video";
+        messageContent = "🎥 You sent a video.";
+        appDataPayload.data.message.type = "video";
+        const videoDir = path.join(storageDir, "video");
+        fs.ensureDirSync(videoDir);
+        const videoPath = path.join(videoDir, `${Date.now()}.mp4`);
+        await downloadAndSaveFile(msg.message.videoMessage.url, videoPath);
+        appDataPayload.data.message.url = videoPath;
+      } else if (msg.message.audioMessage) {
+        messageType = "audio";
+        messageContent = "🎵 You sent an audio.";
+        appDataPayload.data.message.type = "audio";
+        const audioDir = path.join(storageDir, "audio");
+        fs.ensureDirSync(audioDir);
+        const audioPath = path.join(audioDir, `${Date.now()}.mp3`);
+        await downloadAndSaveFile(msg.message.audioMessage.url, audioPath);
+        appDataPayload.data.message.url = audioPath;
+      } else if (msg.message.documentMessage) {
+        messageType = "document";
+        messageContent = "📄 You sent a document.";
+        appDataPayload.data.message.type = "document";
+        const documentDir = path.join(storageDir, "document");
+        fs.ensureDirSync(documentDir);
+        const documentPath = path.join(documentDir, `${Date.now()}.pdf`);
+        await downloadAndSaveFile(
+          msg.message.documentMessage.url,
+          documentPath
+        );
+        appDataPayload.data.message.url = documentPath;
+      } else if (msg.message.stickerMessage) {
+        messageType = "sticker";
+        messageContent = "😊 You sent a sticker.";
+      } else if (msg.message.contactMessage) {
+        messageType = "contact";
+        messageContent = "👤 You sent a contact.";
+        appDataPayload.data.message.type = "contact";
+        appDataPayload.data.message.contact = msg.message.contactMessage;
+      } else if (msg.message.locationMessage) {
+        messageType = "location";
+        messageContent = "📍 You sent a location.";
+        appDataPayload.data.message.type = "location";
+        appDataPayload.data.message.location = {
+          lat: msg.message.locationMessage.degreesLatitude,
+          long: msg.message.locationMessage.degreesLongitude,
+        };
+      } else if (msg.message.liveLocationMessage) {
+        messageType = "live-location";
+        messageContent = "📍 You sent a live location.";
+      } else if (msg.message.vcardMessage) {
+        messageType = "vcard";
+        messageContent = "📇 You sent a vCard.";
+        appDataPayload.data.message.type = "vcard";
+        appDataPayload.data.message.vcard = msg.message.vcardMessage;
+      } else if (msg.message.gifMessage) {
+        messageType = "gif";
+        messageContent = "🎬 You sent a GIF.";
+        appDataPayload.data.message.type = "gif";
+        const gifDir = path.join(storageDir, "gif");
+        fs.ensureDirSync(gifDir);
+        const gifPath = path.join(gifDir, `${Date.now()}.gif`);
+        await downloadAndSaveFile(msg.message.gifMessage.url, gifPath);
+        appDataPayload.data.message.url = gifPath;
       } else {
         messageContent = "[Unsupported Message Type]";
       }
+      console.log(`📩 New message from ${sender}: ${messageContent}`);
       if (!msg.key.fromMe) {
-        console.log(`📩 New message from ${sender}: ${messageContent}`);
-        // await sock.sendMessage(sender, { text: `You said: ${messageContent}` });
+        const notSupportedTypes = ["sticker", "contact", "location", "vcard"];
+        if (!isGroup && !notSupportedTypes.includes(messageType)) {
+          await sendDataToApp(uuid, appDataPayload);
+          // Delete the media file from storage after sending data
+          if (appDataPayload.data.message.url) {
+            fs.remove(appDataPayload.data.message.url, (err) => {
+              if (err) {
+                console.error(`❌ Error deleting file: ${err}`);
+              } else {
+                console.log(
+                  `🗑️ Deleted file: ${appDataPayload.data.message.url}`
+                );
+              }
+            });
+          }
+        } else {
+          // await sock.sendMessage(sender, {
+          //   text: `We do not support ${messageType} messages yet.`,
+          // });
+        }
       }
     }
   });
@@ -161,6 +298,9 @@ const getConnection = async (uuid, callback) => {
     if (qrCodes[uuid]) {
       callback(null, qrCodes[uuid]); // Return the QR code if it's available
     } else {
+      if (callback) {
+        callback(null, null);
+      }
       return connection; // Return the existing connection
     }
   }
