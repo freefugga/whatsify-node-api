@@ -11,6 +11,7 @@ const P = require("pino");
 
 const { sendDataToApp } = require("../config/lara-api");
 const e = require("express");
+const { uploadMediaToImgur } = require("../helpers/imgur");
 
 let appDataPayload = {
   type: "",
@@ -197,7 +198,22 @@ const createConnection = async (uuid, callback) => {
         fs.ensureDirSync(imageDir);
         const imagePath = path.join(imageDir, `${Date.now()}.jpg`);
         await downloadAndSaveFile(msg.message.imageMessage.url, imagePath);
-        appDataPayload.data.message.url = imagePath;
+
+        // Upload to Imgur
+        const imgurResponse = await uploadMediaToImgur(imagePath);
+        if (imgurResponse.success) {
+          appDataPayload.data.message.url = imgurResponse.data.link;
+          // Delete local file
+          fs.remove(imagePath, (err) => {
+            if (err) {
+              console.error(`❌ Error deleting file: ${err}`);
+            } else {
+              console.log(`🗑️ Deleted file: ${imagePath}`);
+            }
+          });
+        } else {
+          appDataPayload.data.message.url = imagePath;
+        }
         appDataPayload.data.message.caption = msg.message.imageMessage.caption;
       } else if (msg.message.videoMessage) {
         messageType = "video";
@@ -207,7 +223,22 @@ const createConnection = async (uuid, callback) => {
         fs.ensureDirSync(videoDir);
         const videoPath = path.join(videoDir, `${Date.now()}.mp4`);
         await downloadAndSaveFile(msg.message.videoMessage.url, videoPath);
-        appDataPayload.data.message.url = videoPath;
+
+        // Upload to Imgur
+        const imgurResponse = await uploadMediaToImgur(videoPath);
+        if (imgurResponse.success) {
+          appDataPayload.data.message.url = imgurResponse.data.link;
+          // Delete local file
+          fs.remove(videoPath, (err) => {
+            if (err) {
+              console.error(`❌ Error deleting file: ${err}`);
+            } else {
+              console.log(`🗑️ Deleted file: ${videoPath}`);
+            }
+          });
+        } else {
+          appDataPayload.data.message.url = videoPath;
+        }
         appDataPayload.data.message.caption = msg.message.videoMessage.caption;
       } else if (msg.message.audioMessage) {
         messageType = "audio";
