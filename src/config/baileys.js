@@ -240,47 +240,7 @@ const createConnection = async (uuid, callback) => {
         messageType = "contact";
         messageContent = "👤 You sent a contact.";
         appDataPayload.data.message.type = "contact";
-        appDataPayload.data.message.contact = {};
-        if (msg.message.contactsArrayMessage) {
-          appDataPayload.data.message.contact.name =
-            msg.message.contactsArrayMessage.contacts[0].displayName;
-          let numberArray = [];
-          msg.message.contactsArrayMessage.contacts.map((contact) => {
-            const telMatches = contact.vcard.match(/TEL;[^:]*:(.+)/g);
-            console.log(telMatches);
-            // Extract and clean the phone numbers
-            const telNumbers = telMatches
-              ? telMatches.map((match) => {
-                  // Extract the number part after ':'
-                  const number = match.split(":")[1];
-
-                  // Remove all spaces and dashes from the number
-                  return number.replace(/[\s-]+/g, "");
-                })
-              : [];
-            return numberArray.push(telNumbers[0]);
-          });
-          appDataPayload.data.message.contact.number = numberArray;
-        } else {
-          appDataPayload.data.message.contact.name =
-            msg.message.contactMessage.displayName;
-          const vcard = msg.message.contactMessage.vcard;
-
-          // Match all TEL entries in the vCard
-          const telMatches = vcard.match(/TEL;[^:]*:(.+)/g);
-
-          // Extract and clean the phone numbers
-          const telNumbers = telMatches
-            ? telMatches.map((match) => {
-                // Extract the number part after ':'
-                const number = match.split(":")[1];
-
-                // Remove all spaces and dashes from the number
-                return number.replace(/[\s-]+/g, "");
-              })
-            : [];
-          appDataPayload.data.message.contact.number = telNumbers;
-        }
+        appDataPayload.data.message.contact = msg.message.contactMessage;
       } else if (msg.message.locationMessage) {
         messageType = "location";
         messageContent = "📍 You sent a location.";
