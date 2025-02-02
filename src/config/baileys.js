@@ -138,13 +138,15 @@ const createConnection = async (uuid, callback) => {
 
       // Reconnect on non-logout disconnects
       if (reason !== DisconnectReason.loggedOut) {
-        createConnection(uuid, callback);
+        setTimeout(() => {
+          createConnection(uuid, callback);
+        }, 5 * 1000);
       }
 
       if (reason === null) {
         setTimeout(() => {
           createConnection(uuid, callback);
-        }, 3 * 1000); // Delay longer to avoid spamming
+        }, 5 * 1000); // Delay longer to avoid spamming
       }
     }
   });
@@ -196,6 +198,7 @@ const createConnection = async (uuid, callback) => {
         const imagePath = path.join(imageDir, `${Date.now()}.jpg`);
         await downloadAndSaveFile(msg.message.imageMessage.url, imagePath);
         appDataPayload.data.message.url = imagePath;
+        appDataPayload.data.message.caption = msg.message.imageMessage.caption;
       } else if (msg.message.videoMessage) {
         messageType = "video";
         messageContent = "🎥 You sent a video.";
@@ -205,6 +208,7 @@ const createConnection = async (uuid, callback) => {
         const videoPath = path.join(videoDir, `${Date.now()}.mp4`);
         await downloadAndSaveFile(msg.message.videoMessage.url, videoPath);
         appDataPayload.data.message.url = videoPath;
+        appDataPayload.data.message.caption = msg.message.videoMessage.caption;
       } else if (msg.message.audioMessage) {
         messageType = "audio";
         messageContent = "🎵 You sent an audio.";
@@ -229,11 +233,56 @@ const createConnection = async (uuid, callback) => {
       } else if (msg.message.stickerMessage) {
         messageType = "sticker";
         messageContent = "😊 You sent a sticker.";
-      } else if (msg.message.contactMessage) {
+      } else if (
+        msg.message.contactMessage ||
+        msg.message.contactsArrayMessage
+      ) {
         messageType = "contact";
         messageContent = "👤 You sent a contact.";
         appDataPayload.data.message.type = "contact";
-        appDataPayload.data.message.contact = msg.message.contactMessage;
+        appDataPayload.data.message.contact = {};
+        if (msg.message.contactsArrayMessage) {
+          appDataPayload.data.message.contact.name =
+            msg.message.contactsArrayMessage.contacts[0].displayName;
+          let numberArray = [];
+          msg.message.contactsArrayMessage.contacts.map((contact) => {
+              
+            const telMatches = contact.vcard.match(/TEL;[^:]*:(.+)/g);
+            console.log(telMatches);
+            // Extract and clean the phone numbers
+            const telNumbers = telMatches
+              ? telMatches.map((match) => {
+                  // Extract the number part after ':'
+                  const number = match.split(":")[1];
+
+                  // Remove all spaces and dashes from the number
+                  return number.replace(/[\s-]+/g, "");
+                })
+              : [];
+            return numberArray.push(telNumbers[0]);
+          });
+          appDataPayload.data.message.contact.number = numberArray;
+            
+        } else {
+          appDataPayload.data.message.contact.name =
+            msg.message.contactMessage.displayName;
+          const vcard = msg.message.contactMessage.vcard;
+
+          // Match all TEL entries in the vCard
+          const telMatches = vcard.match(/TEL;[^:]*:(.+)/g);
+
+          // Extract and clean the phone numbers
+          const telNumbers = telMatches
+            ? telMatches.map((match) => {
+                // Extract the number part after ':'
+                const number = match.split(":")[1];
+
+                // Remove all spaces and dashes from the number
+                return number.replace(/[\s-]+/g, "");
+              })
+            : [];
+          appDataPayload.data.message.contact.number = telNumbers;
+        }
       } else if (msg.message.locationMessage) {
         messageType = "location";
         messageContent = "📍 You sent a location.";
@@ -250,21 +299,12 @@ const createConnection = async (uuid, callback) => {
         messageContent = "📇 You sent a vCard.";
         appDataPayload.data.message.type = "vcard";
         appDataPayload.data.message.vcard = msg.message.vcardMessage;
-      } else if (msg.message.gifMessage) {
-        messageType = "gif";
-        messageContent = "🎬 You sent a GIF.";
-        appDataPayload.data.message.type = "gif";
-        const gifDir = path.join(storageDir, "gif");
-        fs.ensureDirSync(gifDir);
-        const gifPath = path.join(gifDir, `${Date.now()}.gif`);
-        await downloadAndSaveFile(msg.message.gifMessage.url, gifPath);
-        appDataPayload.data.message.url = gifPath;
       } else {
         messageContent = "[Unsupported Message Type]";
       }
       console.log(`📩 New message from ${sender}: ${messageContent}`);
       if (!msg.key.fromMe) {
-        const notSupportedTypes = ["sticker", "contact", "location", "vcard"];
+        const notSupportedTypes = ["sticker", "live-location", "vcard"];
         if (!isGroup && !notSupportedTypes.includes(messageType)) {
           await sendDataToApp(uuid, appDataPayload);
           // Delete the media file from storage after sending data
