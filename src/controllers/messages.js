@@ -124,7 +124,7 @@ exports.sendMessage = async (req, res) => {
     if (result.length > 0) {
       jid = result[0].jid;
     } else {
-      return res.json({
+      return res.status(404).json({
         success: false,
         message: "Receiver is not on WhatsApp",
       });
