@@ -144,7 +144,7 @@ const createConnection = async (uuid, callback) => {
       }
       if (!msg.key.fromMe) {
         console.log(`📩 New message from ${sender}: ${messageContent}`);
-        await sock.sendMessage(sender, { text: `You said: ${messageContent}` });
+        // await sock.sendMessage(sender, { text: `You said: ${messageContent}` });
       }
     }
   });
