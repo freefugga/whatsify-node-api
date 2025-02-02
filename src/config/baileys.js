@@ -115,7 +115,10 @@ const createConnection = async (uuid, callback) => {
         try {
           fs.removeSync(sessionPath); // Synchronously remove the session folder
           appDataPayload.type = "connection";
-          appDataPayload.data = { status: "logged_out" };
+          appDataPayload.data = {
+            status: "disconnected",
+            reason: "logged_out",
+          };
           sendDataToApp(uuid, appDataPayload);
         } catch (error) {
           console.error(`❌ Error removing session for ${uuid}: ${error}`);
@@ -142,7 +145,6 @@ const createConnection = async (uuid, callback) => {
         setTimeout(() => {
           createConnection(uuid, callback);
         }, 3 * 1000); // Delay longer to avoid spamming
-        return;
       }
     }
   });
