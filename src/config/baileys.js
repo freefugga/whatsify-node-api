@@ -2,6 +2,8 @@ const {
   makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
 } = require("@whiskeysockets/baileys");
 const fs = require("fs-extra");
 const path = require("path");
@@ -9,7 +11,7 @@ const qrcodeTerminal = require("qrcode-terminal");
 const Boom = require("@hapi/boom");
 const P = require("pino");
 
-const { sendDataToApp } = require("../config/lara-api");
+const { sendDataToApp } = require("../helpers/lara-api");
 const e = require("express");
 const { uploadMediaToImgur } = require("../helpers/imgur");
 
@@ -41,6 +43,7 @@ const restoreSessions = async () => {
         console.log(`✅ Session restored for ${uuid}`);
       });
     } else {
+      fs.removeSync(sessionPath); // Remove invalid session
       console.log(`⚠️ No valid session found for ${uuid}`);
     }
   }
@@ -54,15 +57,18 @@ const createConnection = async (uuid, callback) => {
 
   const sessionPath = path.join(sessionsDir, uuid);
   const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+  const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
+    version,
     auth: state,
     printQRInTerminal: false,
     browser: ["Whatsify", "Chrome"],
     restartOnAuthFail: true,
     logger: P({ level: "silent" }),
-    syncFullHistory: false,
+    syncFullHistory: true,
     emitOwnEvents: true,
+    signalStore: makeCacheableSignalKeyStore(state.creds),
   });
 
   // Listen for credentials update (save creds)
@@ -76,9 +82,6 @@ const createConnection = async (uuid, callback) => {
     if (qr) {
       qrCodes[uuid] = qr; // Store QR code in qrCodes for the given account (UUID)
 
-      // Optionally, print QR code in terminal for local development
-      qrcodeTerminal.generate(qr, { small: true });
-
       // Call the callback with the QR code once it is generated
       if (callback && typeof callback === "function") {
         callback(null, qrCodes[uuid]);
@@ -91,7 +94,13 @@ const createConnection = async (uuid, callback) => {
       delete qrCodes[uuid]; // Clear QR code after connection is made
       sessions[uuid] = { sock }; // Store the socket object in sessions
       appDataPayload.type = "connection";
-      appDataPayload.data = { status: "connected" };
+      appDataPayload.data = {
+        status: "connected",
+        phone: sessions[uuid].sock.user.id
+          .split(":")[0]
+          .replace("@s.whatsapp.net", ""),
+        uuid: uuid,
+      };
       sendDataToApp(uuid, appDataPayload);
       if (callback && typeof callback === "function") {
         callback(null, null); // Connection established, no QR needed
@@ -152,115 +161,165 @@ const createConnection = async (uuid, callback) => {
     }
   });
 
+  sock.ev.on("presence.update", async (update) => {
+    const { id, presences } = update;
+
+    if (id.includes("@g.us")) return; // Ignore group presence updates
+
+    let waId = id.replace("@s.whatsapp.net", "");
+    appDataPayload.type = "presence_update";
+    appDataPayload.data = {
+      number: waId,
+      update: presences[Object.keys(presences)[0]].lastKnownPresence,
+    };
+    console.log(appDataPayload.data);
+
+    await sock.presenceSubscribe(id);
+
+    await sendDataToApp(uuid, appDataPayload);
+    delete appDataPayload.data;
+  });
+
   sock.ev.on("messages.upsert", async (messageEvent) => {
     const { messages, type } = messageEvent;
 
-    if (type === "notify") {
-      const msg = messages[0];
+    const msg = messages[0];
+
+    switch (type) {
+      case "notify":
+        console.log("🔔 New message notification:", msg);
+        break;
+      case "insert":
+        console.log("📩 New message received:", msg);
+        break;
+      case "update":
+        console.log("✏️ Message updated:", msg);
+        break;
+      case "delete":
+        console.log("🗑️ Message deleted:", msg);
+        break;
+      case "append":
+        console.log("📩 New message appended:", msg);
+        break;
+      default:
+        console.log("⚡ Unknown message type:", type);
+    }
+    if (type === "notify" || type === "append") {
       if (!msg.message) return; // Ignore empty messages
 
       const sender = msg.key.remoteJid;
+      const profilePictureHd = await sock.profilePictureUrl(sender, "image");
       if (sender === "status@broadcast") return; // Ignore status messages
       const isGroup = sender.includes("@g.us");
 
       let messageContent;
       let messageType;
+      let attachmentUrl;
+      let attachmentMimeType;
+      let attachmentKey;
       // Remove status if present in appDataPayload
-      if (appDataPayload.data.status) {
+      if (appDataPayload.data && appDataPayload.data.status) {
         delete appDataPayload.data.status;
+      } else if (!appDataPayload.data) {
+        appDataPayload.data = {};
       }
-      appDataPayload.type = "incoming_message";
-      appDataPayload.data.message = {}; // Initialize message object
-      const downloadAndSaveFile = async (url, filePath) => {
-        const response = await fetch(url);
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer);
-        fs.writeFileSync(filePath, buffer);
+      appDataPayload.data.messageObject = msg;
+      if (!msg.key.fromMe) {
+        appDataPayload.type = "incoming_message";
+        appDataPayload.data.transfer_type = "received";
+      } else {
+        appDataPayload.type = "outgoing_message";
+        appDataPayload.data.transfer_type = "sent";
+      }
+      appDataPayload.data.other_party = {
+        number: sender.replace("@s.whatsapp.net", ""),
+        profile_picture_hd: profilePictureHd,
       };
-
-      const storageDir = path.join(__dirname, "../../storage/downloads", uuid);
+      appDataPayload.data.message = {}; // Initialize message object
+      appDataPayload.data.message.id = msg.key.id;
+      appDataPayload.data.message.timestamp = msg.messageTimestamp;
 
       if (msg.message.conversation) {
         messageType = "text";
         messageContent = msg.message.conversation;
         appDataPayload.data.message.type = "text";
-        appDataPayload.data.message.text = messageContent;
+        appDataPayload.data.message.caption = messageContent;
       } else if (msg.message.extendedTextMessage) {
         messageType = "text";
         messageContent = msg.message.extendedTextMessage.text;
         appDataPayload.data.message.type = "text";
-        appDataPayload.data.message.text = messageContent;
+        appDataPayload.data.message.caption = messageContent;
       } else if (msg.message.imageMessage) {
         messageType = "image";
         messageContent = "🖼️ You sent an image.";
         appDataPayload.data.message.type = "image";
-        const imageDir = path.join(storageDir, "image");
-        fs.ensureDirSync(imageDir);
-        const imagePath = path.join(imageDir, `${Date.now()}.jpg`);
-        await downloadAndSaveFile(msg.message.imageMessage.url, imagePath);
-
-        // Upload to Imgur
-        const imgurResponse = await uploadMediaToImgur(imagePath);
-        if (imgurResponse.success) {
-          appDataPayload.data.message.url = imgurResponse.data.link;
-          // Delete local file
-          fs.remove(imagePath, (err) => {
-            if (err) {
-              console.error(`❌ Error deleting file: ${err}`);
-            } else {
-              console.log(`🗑️ Deleted file: ${imagePath}`);
-            }
-          });
-        } else {
-          appDataPayload.data.message.url = imagePath;
-        }
+        attachmentMimeType = msg.message.imageMessage.mimetype;
+        appDataPayload.data.message.file = attachmentUrl;
+        appDataPayload.data.message.mimetype = attachmentMimeType;
+        appDataPayload.data.message.mediaKey = attachmentKey;
         appDataPayload.data.message.caption = msg.message.imageMessage.caption;
+        appDataPayload.data.message.filename =
+          msg.message.imageMessage.fileName;
       } else if (msg.message.videoMessage) {
         messageType = "video";
         messageContent = "🎥 You sent a video.";
         appDataPayload.data.message.type = "video";
-        const videoDir = path.join(storageDir, "video");
-        fs.ensureDirSync(videoDir);
-        const videoPath = path.join(videoDir, `${Date.now()}.mp4`);
-        await downloadAndSaveFile(msg.message.videoMessage.url, videoPath);
-
-        // Upload to Imgur
-        const imgurResponse = await uploadMediaToImgur(videoPath);
-        if (imgurResponse.success) {
-          appDataPayload.data.message.url = imgurResponse.data.link;
-          // Delete local file
-          fs.remove(videoPath, (err) => {
-            if (err) {
-              console.error(`❌ Error deleting file: ${err}`);
-            } else {
-              console.log(`🗑️ Deleted file: ${videoPath}`);
-            }
-          });
-        } else {
-          appDataPayload.data.message.url = videoPath;
-        }
+        attachmentUrl = msg.message.videoMessage.url;
+        attachmentMimeType = msg.message.videoMessage.mimetype;
+        attachmentKey = msg.message.videoMessage.mediaKey;
+        appDataPayload.data.message.file = attachmentUrl;
+        appDataPayload.data.message.mimetype = attachmentMimeType;
+        appDataPayload.data.message.mediaKey = attachmentKey;
         appDataPayload.data.message.caption = msg.message.videoMessage.caption;
+        appDataPayload.data.message.filename =
+          msg.message.videoMessage.fileName;
       } else if (msg.message.audioMessage) {
         messageType = "audio";
         messageContent = "🎵 You sent an audio.";
         appDataPayload.data.message.type = "audio";
-        const audioDir = path.join(storageDir, "audio");
-        fs.ensureDirSync(audioDir);
-        const audioPath = path.join(audioDir, `${Date.now()}.mp3`);
-        await downloadAndSaveFile(msg.message.audioMessage.url, audioPath);
-        appDataPayload.data.message.url = audioPath;
-      } else if (msg.message.documentMessage) {
+        attachmentUrl = msg.message.audioMessage.url;
+        attachmentMimeType = msg.message.audioMessage.mimetype;
+        attachmentKey = msg.message.audioMessage.mediaKey;
+        appDataPayload.data.message.file = attachmentUrl;
+        appDataPayload.data.message.mimetype = attachmentMimeType;
+        appDataPayload.data.message.mediaKey = attachmentKey;
+        appDataPayload.data.message.filename =
+          msg.message.audioMessage.fileName;
+      } else if (
+        msg.message.documentMessage ||
+        msg.message.documentWithCaptionMessage
+      ) {
         messageType = "document";
         messageContent = "📄 You sent a document.";
         appDataPayload.data.message.type = "document";
-        const documentDir = path.join(storageDir, "document");
-        fs.ensureDirSync(documentDir);
-        const documentPath = path.join(documentDir, `${Date.now()}.pdf`);
-        await downloadAndSaveFile(
-          msg.message.documentMessage.url,
-          documentPath
-        );
-        appDataPayload.data.message.url = documentPath;
+        if (msg.message.documentMessage) {
+          attachmentUrl = msg.message.documentMessage.url;
+          attachmentMimeType = msg.message.documentMessage.mimetype;
+          attachmentKey = msg.message.documentMessage.mediaKey;
+        } else if (msg.message.documentWithCaptionMessage) {
+          attachmentUrl =
+            msg.message.documentWithCaptionMessage.message.documentMessage.url;
+          attachmentMimeType =
+            msg.message.documentWithCaptionMessage.message.documentMessage
+              .mimetype;
+          attachmentKey =
+            msg.message.documentWithCaptionMessage.message.documentMessage
+              .mediaKey;
+        }
+        appDataPayload.data.message.file = attachmentUrl;
+        appDataPayload.data.message.mimetype = attachmentMimeType;
+        appDataPayload.data.message.mediaKey = attachmentKey;
+        if (msg.message.documentWithCaptionMessage) {
+          appDataPayload.data.message.filename =
+            msg.message.documentWithCaptionMessage.message.documentMessage.fileName;
+        } else {
+          appDataPayload.data.message.filename =
+            msg.message.documentMessage.fileName;
+        }
+        if (msg.message.documentWithCaptionMessage) {
+          appDataPayload.data.message.caption =
+            msg.message.documentWithCaptionMessage.message.documentMessage.caption;
+        }
       } else if (msg.message.stickerMessage) {
         messageType = "sticker";
         messageContent = "😊 You sent a sticker.";
@@ -332,27 +391,26 @@ const createConnection = async (uuid, callback) => {
         messageContent = "[Unsupported Message Type]";
       }
       console.log(`📩 New message from ${sender}: ${messageContent}`);
-      if (!msg.key.fromMe) {
-        const notSupportedTypes = ["sticker", "live-location", "vcard"];
-        if (!isGroup && !notSupportedTypes.includes(messageType)) {
-          await sendDataToApp(uuid, appDataPayload);
-          // Delete the media file from storage after sending data
-          if (appDataPayload.data.message.url) {
-            fs.remove(appDataPayload.data.message.url, (err) => {
-              if (err) {
-                console.error(`❌ Error deleting file: ${err}`);
-              } else {
-                console.log(
-                  `🗑️ Deleted file: ${appDataPayload.data.message.url}`
-                );
-              }
-            });
-          }
-        } else {
-          // await sock.sendMessage(sender, {
-          //   text: `We do not support ${messageType} messages yet.`,
-          // });
+      const notSupportedTypes = ["sticker", "live-location", "vcard"];
+      if (!isGroup && !notSupportedTypes.includes(messageType)) {
+        await sendDataToApp(uuid, appDataPayload);
+        // Delete the media file from storage after sending data
+        if (appDataPayload.data.message.url) {
+          fs.remove(appDataPayload.data.message.url, (err) => {
+            if (err) {
+              console.error(`❌ Error deleting file: ${err}`);
+            } else {
+              console.log(
+                `🗑️ Deleted file: ${appDataPayload.data.message.url}`
+              );
+            }
+          });
+          delete appDataPayload.data;
         }
+      } else {
+        // await sock.sendMessage(sender, {
+        //   text: `We do not support ${messageType} messages yet.`,
+        // });
       }
     }
   });
@@ -375,6 +433,13 @@ const getConnection = async (uuid, callback) => {
       return connection; // Return the existing connection
     }
   }
+};
+
+const checkConnection = async (uuid) => {
+  if (!sessions[uuid]) {
+    return false;
+  }
+  return true;
 };
 
 module.exports = {

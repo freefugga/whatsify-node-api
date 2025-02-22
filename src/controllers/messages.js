@@ -1,9 +1,13 @@
-const { xmppPreKey } = require("baileys");
-const { getConnection } = require("../config/baileys");
+const { generateMessageID } = require("baileys");
+const { getConnection, initStore } = require("../config/baileys");
 const fs = require("fs-extra");
+const path = require("path");
 const { param } = require("../routes");
+const { downloadContentFromMessage } = require("baileys");
+const axios = require("axios");
+const { downloadMediaMessage } = require("@whiskeysockets/baileys");
 
-exports.sendMessage = async (req, res) => {
+const sendMessage = async (req, res) => {
   try {
     const {
       account,
@@ -19,6 +23,8 @@ exports.sendMessage = async (req, res) => {
       document_url,
       lat,
       long,
+      con_numbers,
+      con_name,
     } = req.body;
     if (!account || !to || !message || !type) {
       if (!account) {
@@ -147,7 +153,7 @@ exports.sendMessage = async (req, res) => {
       // Handle Video
       if (media_type === "video" || media_type === "gif") {
         if (media_file) {
-          payload.video = fs.readFileSync(media_file); // Use fs to read the file for sending video
+          payload.video = Buffer.from(media_file, "base64"); // Convert base64 to Buffer for sending video
         } else if (media_url) {
           payload.video = { url: media_url }; // Provide the URL for the video
         }
@@ -165,7 +171,7 @@ exports.sendMessage = async (req, res) => {
       // Handle Audio
       else if (media_type === "audio") {
         if (media_file) {
-          payload.audio = fs.readFileSync(media_file); // Use fs to read the file for sending audio
+          payload.audio = Buffer.from(media_file, "base64"); // Convert base64 to Buffer for sending audio
         } else if (media_url) {
           payload.audio = { url: media_url }; // Provide the URL for the audio
         }
@@ -174,7 +180,7 @@ exports.sendMessage = async (req, res) => {
       // Handle Image
       else if (media_type === "image") {
         if (media_file) {
-          payload.image = fs.readFileSync(media_file); // Use fs to read the file for sending an image
+          payload.image = Buffer.from(media_file, "base64"); // Convert base64 to Buffer for sending an image
         } else if (media_url) {
           payload.image = { url: media_url }; // Provide the URL for the image
         }
@@ -185,7 +191,7 @@ exports.sendMessage = async (req, res) => {
     }
     if (type === "document") {
       if (document_file) {
-        payload.document = fs.readFileSync(document_file); // Read the document file
+        payload.document = Buffer.from(document_file, "base64"); // Convert base64 to Buffer for sending document
       } else if (document_url) {
         payload.document = { url: document_url }; // Provide the document URL
       }
@@ -209,13 +215,98 @@ exports.sendMessage = async (req, res) => {
         degreesLongitude: long,
       };
     }
-    console.log(payload);
 
-    const response = sock.sendMessage(jid, payload);
+    if (type === "contact" && con_name && con_numbers) {
+      if (payload.text) {
+        delete payload.text;
+      }
+      const conNumbersArray = Array.isArray(con_numbers)
+        ? con_numbers
+        : [con_numbers];
+      payload.contacts = {
+        displayName: con_name,
+        contacts: conNumbersArray.map((number) => ({
+          vcard: `BEGIN:VCARD\nVERSION:3.0\nFN:${con_name}\nTEL;type=CELL;type=VOICE;waid=${number}:${number}\nEND:VCARD`,
+        })),
+      };
+    }
 
-    return res.json({ success: true, message: "Message sent!", type: type });
+    const messageId = generateMessageID();
+    sock.sendMessage(jid, payload, { messageId: messageId });
+
+    return res.json({
+      success: true,
+      message: "Message is being sent!",
+      type: type,
+      id: messageId,
+    });
   } catch (error) {
     console.error("Error in sending message:", error); // Log the error to see more details
     return res.status(500).json({ success: false, message: error.message });
   }
 };
+
+const downloadFile = async (req, res) => {
+  const { messageObject, account, message_id, sender, mimetype } = req.body;
+
+  if (!message_id) {
+    return res.status(400).json({
+      success: false,
+      message: "Message ID required",
+      parameter: "message_id",
+    });
+  }
+  if (!sender) {
+    return res.status(400).json({
+      success: false,
+      message: "Sender required",
+      parameter: "sender",
+    });
+  }
+  if (!messageObject) {
+    return res.status(400).json({
+      success: false,
+      message: "Message Object required",
+      parameter: "messageObject",
+    });
+  }
+
+  // Get the session socket
+  const session = await getConnection(account, null);
+  if (!session || !session.sock) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Account not connected" });
+  }
+
+  const sock = session.sock;
+  if (sock.ws.readyState !== sock.ws.OPEN) {
+    return res
+      .status(400)
+      .json({ success: false, message: "WebSocket is not open" });
+  }
+
+  try {
+    // Decrypt the media using Baileys
+    const decryptedBuffer = await downloadMediaMessage(
+      messageObject,
+      "buffer",
+      {}
+    );
+    // Set response headers
+    res.setHeader("Content-Type", mimetype);
+    res.setHeader("Content-Length", decryptedBuffer.length);
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=media.${mimetype.split("/")[1]}`
+    );
+
+    // Send file as stream
+    res.end(decryptedBuffer);
+  } catch (error) {
+    console.error("Error in downloading file:", error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+module.exports = { sendMessage, downloadFile };

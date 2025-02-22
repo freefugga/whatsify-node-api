@@ -4,8 +4,8 @@ const axios = require("axios");
 const sendDataToApp = async (uuid, data) => {
   try {
     console.log(data);
-    const response = await axios.post(
-      process.env.LARAVEL_HOST + "/api/wa-server/data/update",
+    const response = await axios.patch(
+      process.env.LARAVEL_HOST + "/api/update/wa.data",
       {
         secret: process.env.LARAVEL_API_SECRET,
         uuid: uuid,
@@ -19,7 +19,9 @@ const sendDataToApp = async (uuid, data) => {
       console.error(`Failed to send data to Laravel for UUID: ${uuid}`);
     }
   } catch (error) {
-    console.error(`Error sending data to Laravel for UUID: ${uuid}: ${error}`);
+    console.error(
+      `Error sending data to Laravel for UUID: ${uuid}: ${error.response.data.message}`
+    );
   }
 };
 

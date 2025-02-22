@@ -1,8 +1,9 @@
 // src/controllers/connection.js
+const { unixTimestampSeconds } = require("baileys");
 const { getConnection, qrCodes, sessions } = require("../config/baileys");
 const qrcode = require("qrcode");
 
-const getQRorStatus = async (req, res) => {
+const getQr = async (req, res) => {
   try {
     const { account } = req.body;
     if (!account) {
@@ -57,6 +58,27 @@ const getQRorStatus = async (req, res) => {
   }
 };
 
+const getStatus = (req, res) => {
+  if (sessions[req.body.account]) {
+    return res.json({
+      success: true,
+      message: "connected",
+      status: true,
+      phone: sessions[req.body.account].sock.user.id
+        .split(":")[0]
+        .replace("@s.whatsapp.net", ""),
+      timestamp: unixTimestampSeconds(),
+    });
+  } else {
+    return res.json({
+      success: true,
+      message: "disconnected",
+      status: false,
+      timestamp: unixTimestampSeconds(),
+    });
+  }
+};
+
 const disconnect = async (req, res) => {
   try {
     const { account } = req.body;
@@ -72,10 +94,12 @@ const disconnect = async (req, res) => {
       return res.json({ success: true, message: "Disconnected" });
     }
 
-    res.status(400).json({ success: false, message: "Session not found" });
+    return res
+      .status(400)
+      .json({ success: false, message: "Session not found" });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    return res.status(500).json({ success: false, message: error.message });
   }
 };
 
-module.exports = { getQRorStatus, disconnect };
+module.exports = { getQr, disconnect, getStatus };
