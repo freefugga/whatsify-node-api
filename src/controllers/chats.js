@@ -20,15 +20,15 @@ const checkNumber = async (req, res) => {
     const [result] = await sock.onWhatsApp(number + "@s.whatsapp.net");
     res.json({ success: true, exists: result?.exists || false });
   } catch (error) {
-    res.status(500).json({ success: true, message: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
 const markRead = async (req, res) => {
   try {
-    const { account, number, message_id } = req.body;
+    const { account, number, message_ids, last_message } = req.body;
 
-    if (!account || !number || !message_id) {
+    if (!account || !number || !message_ids) {
       return res.status(400).json({
         success: false,
         message: !account
@@ -49,11 +49,13 @@ const markRead = async (req, res) => {
     }
 
     // Send read receipt
-    await sock.sendReadReceipt(
-      number + "@s.whatsapp.net", // Chat JID
-      undefined, // Participant (optional, only for groups)
-      [message_id] // Message ID
+    await sock.sendPresenceUpdate("available", number + "@s.whatsapp.net");
+    await sock.readMessages(message_ids);
+    await sock.chatModify(
+      { markRead: true, lastMessages: [last_message] },
+      number + "@s.whatsapp.net"
     );
+    await sock.sendPresenceUpdate("unavailable", number + "@s.whatsapp.net");
 
     res.json({ success: true, message: "Message marked as read" });
   } catch (error) {
@@ -64,26 +66,38 @@ const markRead = async (req, res) => {
 
 const updatePresence = async (req, res) => {
   try {
-    const { account, status } = req.body;
-    if (!account || !status) {
+    const { account, to, event } = req.body;
+    if (!account || !to || !event) {
       if (!account) {
         return res
           .status(400)
           .json({ success: false, message: "Account ID required" });
       }
-      if (!status) {
+      if (!to) {
         return res
           .status(400)
-          .json({ success: false, message: "Status required" });
+          .json({ success: false, message: "Number required" });
+      }
+      if (!event) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Event required" });
       }
     }
     const { sock } = await getConnection(account);
-
-    await sock.sendPresenceUpdate(status);
+    if (event === "subscribe") {
+      await sock.presenceSubscribe(to + "@s.whatsapp.net");
+    } else {
+      await sock.sendPresenceUpdate(event, to + "@s.whatsapp.net");
+    }
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ success: true, message: error.message });
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
-module.exports = { checkNumber, markRead, updatePresence };
+module.exports = {
+  checkNumber,
+  markRead,
+  updatePresence,
+};

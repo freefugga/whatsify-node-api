@@ -35,6 +35,6 @@ router.post("/messages/download-file", forwardToConnection, downloadFile);
 // Chat Routes
 router.post("/chats/check-number", forwardToConnection, checkNumber);
 router.post("/chats/read-message", forwardToConnection, markRead);
-router.post("chats/update-presence", forwardToConnection, updatePresence);
+router.post("/chats/update-presence", forwardToConnection, updatePresence);
 
 module.exports = router;

@@ -66,9 +66,10 @@ const createConnection = async (uuid, callback) => {
     browser: ["Whatsify", "Chrome"],
     restartOnAuthFail: true,
     logger: P({ level: "silent" }),
-    syncFullHistory: true,
+    syncFullHistory: false,
     emitOwnEvents: true,
     signalStore: makeCacheableSignalKeyStore(state.creds),
+    markOnlineOnConnect: false,
   });
 
   // Listen for credentials update (save creds)
@@ -234,6 +235,7 @@ const createConnection = async (uuid, callback) => {
       appDataPayload.data.other_party = {
         number: sender.replace("@s.whatsapp.net", ""),
         profile_picture_hd: profilePictureHd,
+        name: msg.pushName,
       };
       appDataPayload.data.message = {}; // Initialize message object
       appDataPayload.data.message.id = msg.key.id;
