@@ -144,41 +144,52 @@ const createConnection = async (uuid, callback) => {
       ) {
         setTimeout(() => {
           createConnection(uuid, callback); // Delay the reconnection
-        }, 5 * 1000); // Delay by 3 seconds to prevent immediate error on frontend
+        }, 3 * 1000); // Delay by 3 seconds to prevent immediate error on frontend
       }
 
       // Reconnect on non-logout disconnects
       if (reason !== DisconnectReason.loggedOut) {
         setTimeout(() => {
           createConnection(uuid, callback);
-        }, 5 * 1000);
+        }, 3 * 1000);
       }
 
       if (reason === null) {
         setTimeout(() => {
           createConnection(uuid, callback);
-        }, 5 * 1000); // Delay longer to avoid spamming
+        }, 3 * 1000); // Delay longer to avoid spamming
       }
     }
   });
 
   sock.ev.on("presence.update", async (update) => {
-    const { id, presences } = update;
+    try {
+      const { id, presences } = update;
 
-    if (id.includes("@g.us")) return; // Ignore group presence updates
+      if (!id || !presences) return; // Skip if no data
 
-    let waId = id.replace("@s.whatsapp.net", "");
-    appDataPayload.type = "presence_update";
-    appDataPayload.data = {
-      number: waId,
-      update: presences[Object.keys(presences)[0]].lastKnownPresence,
-    };
-    console.log(appDataPayload.data);
+      if (id.includes("@g.us")) return; // Ignore group presence updates
 
-    await sock.presenceSubscribe(id);
+      let waId = id.replace("@s.whatsapp.net", "");
+      let presenceData = Object.values(presences)[0]; // Get first presence object
 
-    await sendDataToApp(uuid, appDataPayload);
-    delete appDataPayload.data;
+      if (!presenceData || !presenceData.lastKnownPresence) return; // Skip if no presence data
+
+      appDataPayload.type = "presence_update";
+      appDataPayload.data = {
+        type: "presence",
+        number: waId,
+        uuid: uuid,
+        presence: presenceData.lastKnownPresence,
+      };
+
+      await sendDataToApp(uuid, appDataPayload);
+
+      // Clean up the payload
+      delete appDataPayload.data;
+    } catch (error) {
+      console.error("Error in presence.update handler:", error);
+    }
   });
 
   sock.ev.on("messages.upsert", async (messageEvent) => {
@@ -209,6 +220,7 @@ const createConnection = async (uuid, callback) => {
       if (!msg.message) return; // Ignore empty messages
 
       const sender = msg.key.remoteJid;
+
       const profilePictureHd = await sock.profilePictureUrl(sender, "image");
       if (sender === "status@broadcast") return; // Ignore status messages
       const isGroup = sender.includes("@g.us");
@@ -392,7 +404,6 @@ const createConnection = async (uuid, callback) => {
       } else {
         messageContent = "[Unsupported Message Type]";
       }
-      console.log(`📩 New message from ${sender}: ${messageContent}`);
       const notSupportedTypes = ["sticker", "live-location", "vcard"];
       if (!isGroup && !notSupportedTypes.includes(messageType)) {
         await sendDataToApp(uuid, appDataPayload);
