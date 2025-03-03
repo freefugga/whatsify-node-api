@@ -11,16 +11,23 @@ const {
 
 // Middleware to forward requests to the connection
 const forwardToConnection = (req, res, next) => {
-  if (!req.headers.authorization) {
-    return res
-      .status(400)
-      .json({ success: false, message: "Secret is required" });
-  }
+  try {
+    if (!req.headers.authorization) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Secret is required" });
+    }
 
-  if (req.headers.authorization !== process.env.LARAVEL_API_SECRET) {
-    return res.status(401).json({ success: false, message: "Unauthorized" });
+    if (req.headers.authorization !== process.env.LARAVEL_API_SECRET) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+    next();
+  } catch (error) {
+    console.log("Error at router: " + error.message);
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal Server Error At Router" });
   }
-  next();
 };
 
 // Connection Routes

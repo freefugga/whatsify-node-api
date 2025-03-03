@@ -11,7 +11,6 @@ async function uploadMediaToImgur(mediaPath) {
     if (!fs.existsSync(mediaPath)) {
       throw new Error("File does not exist at the specified path");
     }
-    console.log(mediaPath);
 
     const fileContent = fs.readFileSync(mediaPath, { encoding: "base64" });
 

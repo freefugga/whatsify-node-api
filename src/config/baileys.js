@@ -351,7 +351,6 @@ const createConnection = async (uuid, callback) => {
           let numberArray = [];
           msg.message.contactsArrayMessage.contacts.map((contact) => {
             const telMatches = contact.vcard.match(/TEL;[^:]*:(.+)/g);
-            console.log(telMatches);
             // Extract and clean the phone numbers
             const telNumbers = telMatches
               ? telMatches.map((match) => {
@@ -416,6 +415,7 @@ const createConnection = async (uuid, callback) => {
               console.log(
                 `🗑️ Deleted file: ${appDataPayload.data.message.url}`
               );
+              fs.removeSync(appDataPayload.data.message.url);
             }
           });
           delete appDataPayload.data;
