@@ -7,6 +7,8 @@ const {
   checkNumber,
   markRead,
   updatePresence,
+  getGroupInfo,
+  getGroups,
 } = require("./controllers/chats");
 
 // Middleware to forward requests to the connection
@@ -43,5 +45,9 @@ router.post("/messages/download-file", forwardToConnection, downloadFile);
 router.post("/chats/check-number", forwardToConnection, checkNumber);
 router.post("/chats/read-message", forwardToConnection, markRead);
 router.post("/chats/update-presence", forwardToConnection, updatePresence);
+
+//Group Routes
+router.post("/groups/get", forwardToConnection, getGroups);
+router.post("/group/info", forwardToConnection, getGroupInfo);
 
 module.exports = router;

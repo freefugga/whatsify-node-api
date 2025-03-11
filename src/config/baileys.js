@@ -219,11 +219,24 @@ const createConnection = async (uuid, callback) => {
     if (type === "notify" || type === "append") {
       if (!msg.message) return; // Ignore empty messages
 
-      const sender = msg.key.remoteJid;
+      let group = null;
+      let groupName = null;
+      let groupProfilePicture = null;
 
-      const profilePictureHd = await sock.profilePictureUrl(sender, "image");
-      if (sender === "status@broadcast") return; // Ignore status messages
-      const isGroup = sender.includes("@g.us");
+      let participant = msg.key.remoteJid;
+      const isGroup = participant.includes("@g.us");
+      if (isGroup) {
+        group = msg.key.remoteJid;
+        participant = msg.key.participant;
+        groupName = msg.key.pushName;
+        groupProfilePicture = await sock.profilePictureUrl(group, "image");
+      }
+      const profilePictureHd = await sock.profilePictureUrl(
+        participant,
+        "image"
+      );
+
+      if (participant === "status@broadcast") return; // Ignore status messages
 
       let messageContent;
       let messageType;
@@ -245,9 +258,13 @@ const createConnection = async (uuid, callback) => {
         appDataPayload.data.transfer_type = "sent";
       }
       appDataPayload.data.other_party = {
-        number: sender.replace("@s.whatsapp.net", ""),
+        number: participant.replace("@s.whatsapp.net", ""),
         profile_picture_hd: profilePictureHd,
-        name: msg.pushName,
+        name: msg.pushName ?? msg.verifiedBizName,
+        is_group: isGroup,
+        group: group,
+        group_name: groupName,
+        group_profile_picture_hd: groupProfilePicture,
       };
       appDataPayload.data.message = {}; // Initialize message object
       appDataPayload.data.message.id = msg.key.id;
@@ -267,10 +284,9 @@ const createConnection = async (uuid, callback) => {
         messageType = "image";
         messageContent = "🖼️ You sent an image.";
         appDataPayload.data.message.type = "image";
-        attachmentMimeType = msg.message.imageMessage.mimetype;
-        appDataPayload.data.message.file = attachmentUrl;
-        appDataPayload.data.message.mimetype = attachmentMimeType;
-        appDataPayload.data.message.mediaKey = attachmentKey;
+        appDataPayload.data.message.file = msg.message.imageMessage.url;
+        appDataPayload.data.message.mimetype =
+          msg.message.imageMessage.mimetype;
         appDataPayload.data.message.caption = msg.message.imageMessage.caption;
         appDataPayload.data.message.filename =
           msg.message.imageMessage.fileName;
@@ -278,12 +294,9 @@ const createConnection = async (uuid, callback) => {
         messageType = "video";
         messageContent = "🎥 You sent a video.";
         appDataPayload.data.message.type = "video";
-        attachmentUrl = msg.message.videoMessage.url;
-        attachmentMimeType = msg.message.videoMessage.mimetype;
-        attachmentKey = msg.message.videoMessage.mediaKey;
-        appDataPayload.data.message.file = attachmentUrl;
-        appDataPayload.data.message.mimetype = attachmentMimeType;
-        appDataPayload.data.message.mediaKey = attachmentKey;
+        appDataPayload.data.message.file = msg.message.videoMessage.url;
+        appDataPayload.data.message.mimetype =
+          msg.message.videoMessage.mimetype;
         appDataPayload.data.message.caption = msg.message.videoMessage.caption;
         appDataPayload.data.message.filename =
           msg.message.videoMessage.fileName;
@@ -291,12 +304,9 @@ const createConnection = async (uuid, callback) => {
         messageType = "audio";
         messageContent = "🎵 You sent an audio.";
         appDataPayload.data.message.type = "audio";
-        attachmentUrl = msg.message.audioMessage.url;
-        attachmentMimeType = msg.message.audioMessage.mimetype;
-        attachmentKey = msg.message.audioMessage.mediaKey;
-        appDataPayload.data.message.file = attachmentUrl;
-        appDataPayload.data.message.mimetype = attachmentMimeType;
-        appDataPayload.data.message.mediaKey = attachmentKey;
+        appDataPayload.data.message.file = msg.message.audioMessage.url;
+        appDataPayload.data.message.mimetype =
+          msg.message.audioMessage.mimetype;
         appDataPayload.data.message.filename =
           msg.message.audioMessage.fileName;
       } else if (
@@ -309,20 +319,17 @@ const createConnection = async (uuid, callback) => {
         if (msg.message.documentMessage) {
           attachmentUrl = msg.message.documentMessage.url;
           attachmentMimeType = msg.message.documentMessage.mimetype;
-          attachmentKey = msg.message.documentMessage.mediaKey;
+          appDataPayload.data.message.caption =
+            msg.message.documentMessage.caption;
         } else if (msg.message.documentWithCaptionMessage) {
           attachmentUrl =
             msg.message.documentWithCaptionMessage.message.documentMessage.url;
           attachmentMimeType =
             msg.message.documentWithCaptionMessage.message.documentMessage
               .mimetype;
-          attachmentKey =
-            msg.message.documentWithCaptionMessage.message.documentMessage
-              .mediaKey;
         }
         appDataPayload.data.message.file = attachmentUrl;
         appDataPayload.data.message.mimetype = attachmentMimeType;
-        appDataPayload.data.message.mediaKey = attachmentKey;
         if (msg.message.documentWithCaptionMessage) {
           appDataPayload.data.message.filename =
             msg.message.documentWithCaptionMessage.message.documentMessage.fileName;
@@ -404,7 +411,8 @@ const createConnection = async (uuid, callback) => {
         messageContent = "[Unsupported Message Type]";
       }
       const notSupportedTypes = ["sticker", "live-location", "vcard"];
-      if (!isGroup && !notSupportedTypes.includes(messageType)) {
+      if (!notSupportedTypes.includes(messageType)) {
+        console.log(appDataPayload);
         await sendDataToApp(uuid, appDataPayload);
         // Delete the media file from storage after sending data
         if (appDataPayload.data.message.url) {

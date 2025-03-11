@@ -204,6 +204,7 @@ const sendMessage = async (req, res) => {
       if (payload.text) {
         delete payload.text;
       }
+      payload.caption = message;
     }
 
     if (type === "location" && lat && long) {
@@ -230,6 +231,8 @@ const sendMessage = async (req, res) => {
         })),
       };
     }
+
+    console.log("Payload:", payload);
 
     const messageId = generateMessageID();
     sock.sendMessage(jid, payload, { messageId: messageId });

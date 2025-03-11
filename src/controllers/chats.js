@@ -96,8 +96,74 @@ const updatePresence = async (req, res) => {
   }
 };
 
+const getGroups = async (req, res) => {
+  try {
+    const { account } = req.body;
+    if (!account) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Account ID required" });
+    }
+    const { sock } = await getConnection(account);
+    const groups = await sock.groupFetchAllParticipating();
+    const groupList = Object.values(groups)
+      .filter((group) => !group.isCommunity && !group.isCommunityAnnounce) // Filter out communities
+      .map((group) => ({
+        id: group.id,
+        subject: group.subject,
+      }));
+    res.json({ success: true, groups: groupList });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+const getGroupInfo = async (req, res) => {
+  try {
+    const { account, group_id } = req.body;
+    if (!account || !group_id) {
+      return res.status(400).json({
+        success: false,
+        message: !account ? "Account ID required" : "Group ID required",
+      });
+    }
+    const { sock } = await getConnection(account);
+    const metadata = await sock.groupMetadata(group_id);
+    const g_participants = metadata.participants;
+
+    // Extract LID-based IDs
+    const lidNumbers = g_participants.map((p) => p.id);
+
+    // Resolve LID numbers to real phone numbers
+    const resolvedNumbers = await Promise.all(
+      lidNumbers.map(async (lid) => {
+        const result = await sock.onWhatsApp(lid);
+        return result.length > 0
+          ? result[0].jid.replace("@s.whatsapp.net", "")
+          : lid;
+      })
+    );
+
+    // Map resolved numbers with their roles
+    const finalParticipants = g_participants.map(
+      (p, index) => resolvedNumbers[index]
+    );
+
+    const { participants, ...groupInfo } = metadata;
+    res.json({
+      success: true,
+      group: groupInfo,
+      participants: finalParticipants,
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 module.exports = {
   checkNumber,
   markRead,
   updatePresence,
+  getGroups,
+  getGroupInfo,
 };
